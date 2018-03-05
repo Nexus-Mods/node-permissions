@@ -1,7 +1,15 @@
 const fs = require('fs');
 const path = require('path');
 
-let winAcl;
+let winAcl = (() => {
+  let lib;
+  return () => {
+    if (lib === undefined) {
+      lib = require('nbind').init(path.join(__dirname)).lib;
+    }
+    return lib;
+  }
+})();
 
 function chmodTranslateRight(user, input) {
   let base = [
@@ -21,11 +29,8 @@ function chmodTranslateRight(user, input) {
 
 function allow(target, user, rights) {
   if (process.platform === 'win32') {
-    if (winAcl === undefined) {
-      winAcl = require('nbind').init(path.join(__dirname)).lib;
-    }
     try {
-      winAcl.apply(winAcl.Access.grant(user, rights), target);
+      winAcl().apply(winAcl().Access.grant(user, rights), target);
       return Promise.resolve();
     } catch (err) {
       return Promise.reject(err);
@@ -36,17 +41,36 @@ function allow(target, user, rights) {
         if (statErr !== null) {
           reject(statErr);
         } else {
-          fs.chmod(target, stats.mode | chmodTranslateRight(user, mode), chmodErr => {
-            return chmodErr !== null
-              ? reject(chmodErr)
-              : resolve();
-          });
+          const chmod = (addRights) => {
+            fs.chmod(target, stats.mode | addRights, chmodErr => {
+              return chmodErr !== null ?
+                reject(chmodErr) :
+                resolve();
+            });
+          }
+          let addRight = chmodTranslateRight(user, mode);
+          if (addRight === 0) {
+            fs.chown(target, fs.userInfo().uid, fs.userInfo().gid, (chownError) => {
+              chmod(chmodTranslateRight('owner', mode));
+            });
+          } else {
+            chmod(addRight);
+          }
         }
       });
     });
   }
 }
 
+function getUserId() {
+  if (process.platform === 'win32') {
+    return winAcl().getSid();
+  } else {
+    return os.userInfo().username;
+  }
+}
+
 module.exports = {
-  allow
+  allow,
+  getUserId,
 };

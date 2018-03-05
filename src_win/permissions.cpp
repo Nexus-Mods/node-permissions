@@ -1,7 +1,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <aclapi.h>
+#include <Sddl.h>
 #include <string>
+#include <iostream>
 #include <sstream>
 #include <vector>
 #include <nbind/api.h>
@@ -59,8 +61,9 @@ private:
     }
     else if (group == "administrator") {
       return WinBuiltinAdministratorsSid;
+    } else {
+      return WinNullSid;
     }
-    throw std::runtime_error("invalid user group");
   }
 
   DWORD translatePermission(const std::string &rights) {
@@ -82,14 +85,21 @@ private:
 
   TRUSTEEW makeTrustee(const std::string &group) {
     DWORD sidSize = SECURITY_MAX_SID_SIZE;
-    mSid = LocalAlloc(LMEM_FIXED, sidSize);
-    if (mSid == nullptr) {
-      throw std::runtime_error("allocation error");
-    }
-    if (!CreateWellKnownSid(translateGroup(group), nullptr, mSid, &sidSize)) {
-      std::ostringstream err;
-      err << "Failed to create sid from group \"" << group << "\": " << ::GetLastError();
-      throw std::runtime_error(err.str());
+    // assume it's a known sid
+    WELL_KNOWN_SID_TYPE knownSid = translateGroup(group);
+    if (knownSid != WinNullSid) {
+      mSid = LocalAlloc(LMEM_FIXED, sidSize);
+      if (mSid == nullptr) {
+        throw std::runtime_error("allocation error");
+      }
+      if (!CreateWellKnownSid(knownSid, nullptr, mSid, &sidSize)) {
+        std::ostringstream err;
+        err << "Failed to create sid from group \"" << group << "\": " << ::GetLastError();
+        throw std::runtime_error(err.str());
+      }
+    } else {
+      // no known sid, assume it's a stringified sid
+      ConvertStringSidToSid(toWC(group.c_str(), CodePage::UTF8, group.size()).c_str(), &mSid);
     }
 
     TRUSTEEW res;
@@ -154,6 +164,44 @@ void apply(Access &access, const std::string &path) {
   }
 }
 
+std::string getSid() {
+  HANDLE token = GetCurrentProcess();
+  if (!OpenProcessToken(token, TOKEN_READ, &token)) {
+    std::ostringstream err;
+    err << "Failed to open process token: " << GetLastError();
+    NBIND_ERR(err.str().c_str());
+    return "";
+  }
+
+  TOKEN_USER *user = nullptr;
+  DWORD required = 0;
+  // pre-flight to get required buffer size
+  GetTokenInformation(token, TokenUser, (void*)user, 0, &required);
+  user = (TOKEN_USER*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, required);
+  ON_BLOCK_EXIT([&] () {
+    HeapFree(GetProcessHeap(), 0, (void*)user);
+  });
+  if (!GetTokenInformation(token, TokenUser, (void*)user, required, &required)) {
+    std::ostringstream err;
+    err << "Failed to get token information: " << GetLastError();
+    NBIND_ERR(err.str().c_str());
+    return "";
+  }
+
+  LPWSTR stringSid;
+  if (!ConvertSidToStringSid(user->User.Sid, &stringSid)) {
+    std::ostringstream err;
+    err << "Failed to convert sid: " << GetLastError();
+    NBIND_ERR(err.str().c_str());
+    return "";
+  }
+  ON_BLOCK_EXIT([&] () {
+    LocalFree(stringSid);
+  });
+
+  return toMB(stringSid, CodePage::UTF8, wcslen(stringSid));
+}
+
 #include <nbind/nbind.h>
  
 NBIND_CLASS(Access) {
@@ -163,4 +211,5 @@ NBIND_CLASS(Access) {
 
 NBIND_GLOBAL() {
   function(apply);
+  function(getSid);
 }
