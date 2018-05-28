@@ -5,9 +5,13 @@
             "includes": [
                 "auto.gypi"
             ],
-            "sources": [
-                "src_win/permissions.cpp"
-            ],
+	    "conditions": [
+		    ['OS=="win"', {
+			    "sources": [
+				    "src_win/permissions.cpp"
+			    ],
+		    }]
+	    ],
             "include_dirs": [
             ],
             "libraries": [
