@@ -27,38 +27,42 @@ function chmodTranslateRight(user, input) {
   }
 }
 
+function chmod(target, user, rights) {
+  return new Promise((resolve, reject) => {
+    fs.stat(target, (statErr, stats) => {
+      if (statErr !== null) {
+        reject(statErr);
+      } else {
+        const chmod = (addRights) => {
+          fs.chmod(target, stats.mode | addRights, chmodErr => {
+            return chmodErr !== null ?
+              reject(chmodErr) :
+              resolve();
+          });
+        }
+        let addRight = chmodTranslateRight(user, rights);
+        if (addRight === 0) {
+          fs.chown(target, fs.userInfo().uid, fs.userInfo().gid, (chownError) => {
+            chmod(chmodTranslateRight('owner', rights));
+          });
+        } else {
+          chmod(addRight);
+        }
+      }
+    });
+  });
+}
+
 function allow(target, user, rights) {
   if (process.platform === 'win32') {
     try {
       winAcl().apply(winAcl().Access.grant(user, rights), target);
-      return Promise.resolve();
+      return chmod(target, user, rights);
     } catch (err) {
       return Promise.reject(err);
     }
   } else {
-    return new Promise((resolve, reject) => {
-      fs.stat(target, (statErr, stats) => {
-        if (statErr !== null) {
-          reject(statErr);
-        } else {
-          const chmod = (addRights) => {
-            fs.chmod(target, stats.mode | addRights, chmodErr => {
-              return chmodErr !== null ?
-                reject(chmodErr) :
-                resolve();
-            });
-          }
-          let addRight = chmodTranslateRight(user, mode);
-          if (addRight === 0) {
-            fs.chown(target, fs.userInfo().uid, fs.userInfo().gid, (chownError) => {
-              chmod(chmodTranslateRight('owner', mode));
-            });
-          } else {
-            chmod(addRight);
-          }
-        }
-      });
-    });
+    return chmod(target, user, rights);
   }
 }
 

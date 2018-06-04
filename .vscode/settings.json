@@ -1,0 +1,16 @@
+{
+    "files.associations": {
+        "*.ksy": "yaml",
+        "xlocale": "cpp",
+        "xstring": "cpp",
+        "xutility": "cpp",
+        "array": "cpp",
+        "istream": "cpp",
+        "memory": "cpp",
+        "tuple": "cpp",
+        "type_traits": "cpp",
+        "utility": "cpp",
+        "xlocnum": "cpp",
+        "iosfwd": "cpp"
+    }
+}
