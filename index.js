@@ -31,24 +31,28 @@ function chmod(target, user, rights) {
   return new Promise((resolve, reject) => {
     fs.stat(target, (statErr, stats) => {
       if (statErr !== null) {
-        reject(statErr);
-      } else {
-        const chmod = (addRights) => {
-          fs.chmod(target, stats.mode | addRights, chmodErr => {
-            return chmodErr !== null ?
-              reject(chmodErr) :
-              resolve();
-          });
-        }
-        let addRight = chmodTranslateRight(user, rights);
-        if (addRight === 0) {
-          fs.chown(target, fs.userInfo().uid, fs.userInfo().gid, (chownError) => {
+        return reject(statErr);
+      }
+
+      const chmod = (addRights) => {
+        fs.chmod(target, stats.mode | addRights, chmodErr => {
+          return chmodErr !== null ?
+            reject(chmodErr) :
+            resolve();
+        });
+      }
+      let addRight = chmodTranslateRight(user, rights);
+      if (addRight === 0) {
+        // specific user, so we need to change the owner. Except we can't do that on windows with chown
+        if (process.platform !== 'win32') {
+          fs.chown(target, parseInt(user, 10), stats.gid, (chownError) => {
             chmod(chmodTranslateRight('owner', rights));
           });
-        } else {
-          chmod(addRight);
         }
+      } else {
+        chmod(addRight);
       }
+      return resolve();
     });
   });
 }
