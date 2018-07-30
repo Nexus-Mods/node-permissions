@@ -116,6 +116,18 @@ private:
   PSID mSid;
 };
 
+std::string stringifyErr(DWORD code, const char *op) {
+  std::ostringstream err;
+  if (code == ERROR_ACCESS_DENIED) {
+    err << op << ": You don't have permission";
+  } else if (code == ERROR_FILE_NOT_FOUND) {
+    err << op << ": File not found";
+  } else {
+    err << op << " failed: " << code;
+  }
+  return err.str();
+}
+
 void apply(Access &access, const std::string &path) {
   std::wstring wpath = toWC(path.c_str(), CodePage::UTF8, path.size());
 
@@ -125,9 +137,7 @@ void apply(Access &access, const std::string &path) {
     wpath.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
     nullptr, nullptr, &oldAcl, nullptr, &secDesc);
   if (res != ERROR_SUCCESS) {
-    std::ostringstream err;
-    err << "Failed to get ACL: " << res;
-    NBIND_ERR(err.str().c_str());
+    NBIND_ERR(stringifyErr(res, "get ACL").c_str());
     return;
   }
 
@@ -141,7 +151,7 @@ void apply(Access &access, const std::string &path) {
   if (res != ERROR_SUCCESS) {
     std::ostringstream err;
     err << "Failed to change ACL: " << res;
-    NBIND_ERR(err.str().c_str());
+    NBIND_ERR(stringifyErr(res, "change ACL").c_str());
     return;
   }
 
@@ -157,9 +167,7 @@ void apply(Access &access, const std::string &path) {
                               newAcl, nullptr);
 
   if (res != ERROR_SUCCESS) {
-    std::ostringstream err;
-    err << "Failed to apply ACL: " << res;
-    NBIND_ERR(err.str().c_str());
+    NBIND_ERR(stringifyErr(res, "apply ACL").c_str());
     return;
   }
 }
@@ -167,9 +175,7 @@ void apply(Access &access, const std::string &path) {
 std::string getSid() {
   HANDLE token = GetCurrentProcess();
   if (!OpenProcessToken(token, TOKEN_READ, &token)) {
-    std::ostringstream err;
-    err << "Failed to open process token: " << GetLastError();
-    NBIND_ERR(err.str().c_str());
+    NBIND_ERR(stringifyErr(::GetLastError(), "open process token").c_str());
     return "";
   }
 
@@ -182,17 +188,13 @@ std::string getSid() {
     HeapFree(GetProcessHeap(), 0, (void*)user);
   });
   if (!GetTokenInformation(token, TokenUser, (void*)user, required, &required)) {
-    std::ostringstream err;
-    err << "Failed to get token information: " << GetLastError();
-    NBIND_ERR(err.str().c_str());
+    NBIND_ERR(stringifyErr(::GetLastError(), "get token information").c_str());
     return "";
   }
 
   LPWSTR stringSid;
   if (!ConvertSidToStringSid(user->User.Sid, &stringSid)) {
-    std::ostringstream err;
-    err << "Failed to convert sid: " << GetLastError();
-    NBIND_ERR(err.str().c_str());
+    NBIND_ERR(stringifyErr(::GetLastError(), "convert sid").c_str());
     return "";
   }
   ON_BLOCK_EXIT([&] () {
