@@ -16,7 +16,7 @@ function chmodTranslateRight(user, input) {
     ['x', 1],
     ['w', 2],
     ['r', 4]
-  ].reduce((prev, perm) => input.indexOf(perm[0]) !== -1 ? prev + perm[2] : prev);
+  ].reduce((prev, perm) => input.indexOf(perm[0]) !== -1 ? prev + perm[1] : prev, 0);
 
   switch (user) {
     case 'everyone': return base * 73; // 7 -> 0777
@@ -34,8 +34,8 @@ function chmod(target, user, rights) {
         return reject(statErr);
       }
 
-      const chmod = (addRights) => {
-        fs.chmod(target, stats.mode | addRights, chmodErr => {
+      const chmodInner = (addRights) => {
+        fs.chmod(target, (stats.mode & 0777) | addRights, chmodErr => {
           return chmodErr !== null ?
             reject(chmodErr) :
             resolve();
@@ -44,13 +44,15 @@ function chmod(target, user, rights) {
       let addRight = chmodTranslateRight(user, rights);
       if (addRight === 0) {
         // specific user, so we need to change the owner. Except we can't do that on windows with chown
-        if (process.platform !== 'win32') {
+        if (process.platform === 'win32') {
+          chmodInner(chmodTranslateRight('owner', rights));
+        } else {
           fs.chown(target, parseInt(user, 10), stats.gid, (chownError) => {
-            chmod(chmodTranslateRight('owner', rights));
+            chmodInner(chmodTranslateRight('owner', rights));
           });
         }
       } else {
-        chmod(addRight);
+        chmodInner(addRight);
       }
       return resolve();
     });
