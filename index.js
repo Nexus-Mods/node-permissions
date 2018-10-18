@@ -1,11 +1,12 @@
 const fs = require('fs');
 const path = require('path');
+const nbind = require('nbind');
 
 let winAcl = (() => {
   let lib;
   return () => {
     if (lib === undefined) {
-      lib = require('nbind').init(path.join(__dirname)).lib;
+      lib = nbind.init(path.join(__dirname)).lib;
     }
     return lib;
   }
