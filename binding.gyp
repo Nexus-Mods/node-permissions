@@ -10,6 +10,9 @@
 			    "sources": [
 				    "src_win/permissions.cpp"
 			    ],
+          "libraries": [
+            "-DelayLoad:node.exe"
+          ]
 		    }]
 	    ],
             "include_dirs": [

@@ -132,7 +132,7 @@ void apply(Access &access, const std::string &path) {
   std::wstring wpath = toWC(path.c_str(), CodePage::UTF8, path.size());
 
   PACL oldAcl;
-  PSECURITY_DESCRIPTOR secDesc;
+  PSECURITY_DESCRIPTOR secDesc = nullptr;
   DWORD res = GetNamedSecurityInfoW(
     wpath.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
     nullptr, nullptr, &oldAcl, nullptr, &secDesc);
@@ -142,10 +142,12 @@ void apply(Access &access, const std::string &path) {
   }
 
   ON_BLOCK_EXIT([&] () {
-    LocalFree(secDesc);
+    if (secDesc != nullptr) {
+      LocalFree(secDesc);
+    }
   });
 
-  PACL newAcl;
+  PACL newAcl = nullptr;
 
   res = SetEntriesInAclW(1, *access, oldAcl, &newAcl);
   if (res != ERROR_SUCCESS) {
@@ -156,7 +158,9 @@ void apply(Access &access, const std::string &path) {
   }
 
   ON_BLOCK_EXIT([&] () {
-    LocalFree(newAcl);
+    if (newAcl != nullptr) {
+      LocalFree(newAcl);
+    }
   });
 
   // SetNamedSecurityInfo expects a non-const point to the path, but there is
@@ -185,20 +189,24 @@ std::string getSid() {
   GetTokenInformation(token, TokenUser, (void*)user, 0, &required);
   user = (TOKEN_USER*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, required);
   ON_BLOCK_EXIT([&] () {
-    HeapFree(GetProcessHeap(), 0, (void*)user);
+    if (user != nullptr) {
+      HeapFree(GetProcessHeap(), 0, (void*)user);
+    }
   });
   if (!GetTokenInformation(token, TokenUser, (void*)user, required, &required)) {
     NBIND_ERR(stringifyErr(::GetLastError(), "get token information").c_str());
     return "";
   }
 
-  LPWSTR stringSid;
+  LPWSTR stringSid = nullptr;
   if (!ConvertSidToStringSid(user->User.Sid, &stringSid)) {
     NBIND_ERR(stringifyErr(::GetLastError(), "convert sid").c_str());
     return "";
   }
   ON_BLOCK_EXIT([&] () {
-    LocalFree(stringSid);
+    if (stringSid != nullptr) {
+      LocalFree(stringSid);
+    }
   });
 
   return toMB(stringSid, CodePage::UTF8, wcslen(stringSid));
