@@ -117,15 +117,15 @@ private:
 };
 
 std::string stringifyErr(DWORD code, const char *op) {
-  std::ostringstream err;
+  std::string res;
   if (code == ERROR_ACCESS_DENIED) {
-    err << op << ": You don't have permission";
+    res = std::string(op) + ": You don't have permission";
   } else if (code == ERROR_FILE_NOT_FOUND) {
-    err << op << ": File not found";
+    res = std::string(op) + ": File not found";
   } else {
-    err << op << " failed: " << code;
+    res = std::string(op) + " failed: " + std::to_string(code);
   }
-  return err.str();
+  return res;
 }
 
 void apply(Access &access, const std::string &path) {
