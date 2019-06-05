@@ -30,7 +30,7 @@ public:
   }
 
   ~Access() {
-    if (mOwner) {
+    if (mOwner && (mSid != nullptr)) {
       LocalFree(mSid);
     }
   }
@@ -113,7 +113,7 @@ private:
 private:
   bool mOwner { true };
   EXPLICIT_ACCESSW mAccess;
-  PSID mSid;
+  PSID mSid{nullptr};
 };
 
 std::string stringifyErr(DWORD code, const char *op) {
@@ -122,6 +122,8 @@ std::string stringifyErr(DWORD code, const char *op) {
     res = std::string(op) + ": You don't have permission";
   } else if (code == ERROR_FILE_NOT_FOUND) {
     res = std::string(op) + ": File not found";
+  } else if (code == ERROR_INVALID_NAME) {
+    res = std::string(op) + ": Invalid name";
   } else {
     res = std::string(op) + " failed: " + std::to_string(code);
   }
