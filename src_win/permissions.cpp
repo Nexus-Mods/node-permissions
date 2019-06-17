@@ -3,8 +3,6 @@
 #include <aclapi.h>
 #include <Sddl.h>
 #include <string>
-#include <iostream>
-#include <sstream>
 #include <vector>
 #include <nbind/api.h>
 
@@ -93,9 +91,7 @@ private:
         throw std::runtime_error("allocation error");
       }
       if (!CreateWellKnownSid(knownSid, nullptr, mSid, &sidSize)) {
-        std::ostringstream err;
-        err << "Failed to create sid from group \"" << group << "\": " << ::GetLastError();
-        throw std::runtime_error(err.str());
+        throw std::runtime_error(std::string("Failed to create sid from group \"") + group + "\": " + std::to_string(::GetLastError()));
       }
     } else {
       // no known sid, assume it's a stringified sid
@@ -153,8 +149,6 @@ void apply(Access &access, const std::string &path) {
 
   res = SetEntriesInAclW(1, *access, oldAcl, &newAcl);
   if (res != ERROR_SUCCESS) {
-    std::ostringstream err;
-    err << "Failed to change ACL: " << res;
     NBIND_ERR(stringifyErr(res, "change ACL").c_str());
     return;
   }
