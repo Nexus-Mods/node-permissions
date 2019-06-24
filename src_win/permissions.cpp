@@ -4,10 +4,68 @@
 #include <Sddl.h>
 #include <string>
 #include <vector>
+#include <nan.h>
 #include <nbind/api.h>
 
 #include "scopeguard.h"
 #include "string_cast.h"
+
+using namespace Nan;
+using namespace v8;
+
+static std::wstring strerror(DWORD errorno) {
+  wchar_t *errmsg = nullptr;
+
+  LCID lcid;
+  GetLocaleInfoEx(L"en-US", LOCALE_RETURN_NUMBER | LOCALE_ILANGUAGE, reinterpret_cast<LPWSTR>(&lcid), sizeof(lcid));
+
+  FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+    FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, errorno,
+    lcid, (LPWSTR)&errmsg, 0, nullptr);
+
+  if (errmsg) {
+    for (int i = (wcslen(errmsg) - 1);
+         (i >= 0) && ((errmsg[i] == '\n') || (errmsg[i] == '\r'));
+         --i) {
+      errmsg[i] = '\0';
+    }
+
+    return errmsg;
+  }
+  else {
+    return L"Unknown error";
+  }
+}
+
+Local<String> operator "" _n(const char *input, size_t) {
+  return Nan::New(input).ToLocalChecked();
+}
+
+const char *translateCode(DWORD err) {
+  switch (err) {
+    default: return uv_err_name(uv_translate_sys_error(err));
+  }
+}
+
+void setNodeErrorCode(v8::Local<v8::Object> err, DWORD errCode) {
+  if (!err->Has("code"_n)) {
+    err->Set("code"_n, Nan::New(translateCode(errCode)).ToLocalChecked());
+  }
+}
+
+inline v8::Local<v8::Value> WinApiException(
+  DWORD lastError
+  , const char *func = nullptr
+  , const wchar_t *path = nullptr) {
+
+  std::wstring errStr = strerror(lastError);
+  std::string err = toMB(errStr.c_str(), CodePage::UTF8, errStr.size()) + " (" + std::to_string(lastError) + ")";
+  std::string pathMB = toMB(path, CodePage::UTF8, wcslen(path));
+  v8::Local<v8::Value> res = node::WinapiErrnoException(v8::Isolate::GetCurrent(), lastError, func, err.c_str(), pathMB.c_str());
+  setNodeErrorCode(res->ToObject(), lastError);
+  return res;
+}
+
 
 class Access {
 public:
@@ -135,7 +193,7 @@ void apply(Access &access, const std::string &path) {
     wpath.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
     nullptr, nullptr, &oldAcl, nullptr, &secDesc);
   if (res != ERROR_SUCCESS) {
-    NBIND_ERR(stringifyErr(res, "get ACL").c_str());
+    v8::Isolate::GetCurrent()->ThrowException(WinApiException(res, "GetNamedSecurityInfoW", wpath.c_str()));
     return;
   }
 
@@ -149,7 +207,7 @@ void apply(Access &access, const std::string &path) {
 
   res = SetEntriesInAclW(1, *access, oldAcl, &newAcl);
   if (res != ERROR_SUCCESS) {
-    NBIND_ERR(stringifyErr(res, "change ACL").c_str());
+    v8::Isolate::GetCurrent()->ThrowException(WinApiException(res, "SetEntriesInAclW", wpath.c_str()));
     return;
   }
 
@@ -167,7 +225,7 @@ void apply(Access &access, const std::string &path) {
                               newAcl, nullptr);
 
   if (res != ERROR_SUCCESS) {
-    NBIND_ERR(stringifyErr(res, "apply ACL").c_str());
+    v8::Isolate::GetCurrent()->ThrowException(WinApiException(res, "SetNamedSecurityInfoW", wpath.c_str()));
     return;
   }
 }
@@ -175,7 +233,7 @@ void apply(Access &access, const std::string &path) {
 std::string getSid() {
   HANDLE token = GetCurrentProcess();
   if (!OpenProcessToken(token, TOKEN_READ, &token)) {
-    NBIND_ERR(stringifyErr(::GetLastError(), "open process token").c_str());
+    v8::Isolate::GetCurrent()->ThrowException(WinApiException(::GetLastError(), "OpenProcessToken"));
     return "";
   }
 
@@ -190,13 +248,13 @@ std::string getSid() {
     }
   });
   if (!GetTokenInformation(token, TokenUser, (void*)user, required, &required)) {
-    NBIND_ERR(stringifyErr(::GetLastError(), "get token information").c_str());
+    v8::Isolate::GetCurrent()->ThrowException(WinApiException(::GetLastError(), "GetTokenInformation"));
     return "";
   }
 
   LPWSTR stringSid = nullptr;
   if (!ConvertSidToStringSid(user->User.Sid, &stringSid)) {
-    NBIND_ERR(stringifyErr(::GetLastError(), "convert sid").c_str());
+    v8::Isolate::GetCurrent()->ThrowException(WinApiException(::GetLastError(), "ConvertSidToStringSid"));
     return "";
   }
   ON_BLOCK_EXIT([&] () {

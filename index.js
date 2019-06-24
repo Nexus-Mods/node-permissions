@@ -61,6 +61,9 @@ function chmod(target, user, rights) {
 }
 
 function allow(target, user, rights) {
+  if ((target === undefined) || (user === undefined) || (rights === undefined)) {
+    throw new Error('expected parameters: (target, user, rights)');
+  }
   if (process.platform === 'win32') {
     try {
       winAcl().apply(winAcl().Access.grant(user, rights), target);
