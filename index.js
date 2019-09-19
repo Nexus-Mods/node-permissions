@@ -1,12 +1,11 @@
 const fs = require('fs');
 const path = require('path');
-const nbind = require('nbind');
 
 let winAcl = (() => {
   let lib;
   return () => {
     if (lib === undefined) {
-      lib = nbind.init(path.join(__dirname)).lib;
+      lib = require('./build/Release/winperm');
     }
     return lib;
   }
@@ -66,7 +65,7 @@ function allow(target, user, rights) {
   }
   if (process.platform === 'win32') {
     try {
-      winAcl().apply(winAcl().Access.grant(user, rights), target);
+      winAcl().apply(winAcl().grant(user, rights), target);
       return chmod(target, user, rights);
     } catch (err) {
       return Promise.reject(err);

@@ -5,7 +5,6 @@
 #include <string>
 #include <vector>
 #include <nan.h>
-#include <nbind/api.h>
 
 #include "scopeguard.h"
 #include "string_cast.h"
@@ -62,7 +61,7 @@ inline v8::Local<v8::Value> WinApiException(
   std::string err = toMB(errStr.c_str(), CodePage::UTF8, errStr.size()) + " (" + std::to_string(lastError) + ")";
   std::string pathMB = toMB(path, CodePage::UTF8, wcslen(path));
   v8::Local<v8::Value> res = node::WinapiErrnoException(v8::Isolate::GetCurrent(), lastError, func, err.c_str(), pathMB.c_str());
-  setNodeErrorCode(res->ToObject(), lastError);
+  setNodeErrorCode(res->ToObject(Nan::GetCurrentContext()).ToLocalChecked(), lastError);
   return res;
 }
 
@@ -75,15 +74,14 @@ public:
     reference.mOwner = false;
   }
 
+  Access(ACCESS_MODE mode, const std::string &group, const std::string &permission) {
+    mAccess.grfAccessMode = mode;
+    mAccess.grfAccessPermissions = translatePermission(permission);
+    mAccess.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+    mAccess.Trustee = makeTrustee(group);
+  }
+
   Access &operator=(const Access&) = delete;
-
-  static Access grant(const std::string &group, const std::string &permission) {
-    return Access(GRANT_ACCESS, group, permission);
-  }
-
-  static Access deny(const std::string &group, const std::string &permission) {
-    return Access(DENY_ACCESS, group, permission);
-  }
 
   ~Access() {
     if (mOwner && (mSid != nullptr)) {
@@ -95,13 +93,6 @@ public:
     return &mAccess;
   }
 private:
-  Access(ACCESS_MODE mode, const std::string &group, const std::string &permission) {
-    mAccess.grfAccessMode = mode;
-    mAccess.grfAccessPermissions = translatePermission(permission);
-    mAccess.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
-    mAccess.Trustee = makeTrustee(group);
-  }
-
   WELL_KNOWN_SID_TYPE translateGroup(const std::string &group) {
     if (group == "everyone") {
       return WinAuthenticatedUserSid;
@@ -168,6 +159,91 @@ private:
   bool mOwner { true };
   EXPLICIT_ACCESSW mAccess;
   PSID mSid{nullptr};
+};
+
+
+class AccessFactory : public Nan::ObjectWrap {
+public:
+  static NAN_MODULE_INIT(Init) {
+    v8::Local<v8::FunctionTemplate> tpl = Nan::New<v8::FunctionTemplate>(New);
+    tpl->InstanceTemplate()->SetInternalFieldCount(1);
+
+    constructor().Reset(Nan::GetFunction(tpl).ToLocalChecked());
+  }
+
+  static NAN_METHOD(Grant) {
+    if (info.Length() != 2) {
+      Nan::ThrowError("Expected parameters (group, permission)");
+      return;
+    }
+
+    v8::Local<v8::Function> cons = Nan::New(constructor());
+
+    String::Utf8Value group(info.GetIsolate(), info[0]);
+    String::Utf8Value permission(info.GetIsolate(), info[1]);
+
+    const int argc = 3;
+    v8::Local<v8::Value> argv[argc] = {
+      Nan::New(GRANT_ACCESS),
+      Nan::New(*group).ToLocalChecked(),
+      Nan::New(*permission).ToLocalChecked(),
+    };
+    info.GetReturnValue().Set(Nan::NewInstance(cons, argc, argv).ToLocalChecked());
+  }
+
+  static NAN_METHOD(Deny) {
+    if (info.Length() != 2) {
+      Nan::ThrowError("Expected parameters (group, permission)");
+      return;
+    }
+
+    v8::Local<v8::Function> cons = Nan::New(constructor());
+
+    String::Utf8Value group(info.GetIsolate(), info[0]);
+    String::Utf8Value permission(info.GetIsolate(), info[1]);
+
+    const int argc = 3;
+    v8::Local<v8::Value> argv[argc] = {
+      Nan::New(DENY_ACCESS),
+      Nan::New(*group).ToLocalChecked(),
+      Nan::New(*permission).ToLocalChecked(),
+    };
+    info.GetReturnValue().Set(Nan::NewInstance(cons, argc, argv).ToLocalChecked());
+  }
+
+  Access *get() const { return m_Value; }
+
+private:
+  explicit AccessFactory(Access *value) : m_Value(value) {}
+
+  ~AccessFactory() {
+    delete m_Value;
+  }
+
+  static NAN_METHOD(New) {
+    if (info.IsConstructCall()) {
+      int access = info[0]->Int32Value(Nan::GetCurrentContext()).ToChecked();
+      String::Utf8Value group(info.GetIsolate(), info[1]);
+      String::Utf8Value permission(info.GetIsolate(), info[2]);
+
+      AccessFactory *obj = new AccessFactory(new Access(static_cast<ACCESS_MODE>(access), *group, *permission));
+      obj->Wrap(info.This());
+      info.GetReturnValue().Set(info.This());
+    }
+    else {
+      const int argc = 3;
+      v8::Local<v8::Value> argv[argc] = { info[0], info[1], info[2] };
+      v8::Local<v8::Function> cons = Nan::New(constructor());
+      info.GetReturnValue().Set(Nan::NewInstance(cons, argc, argv).ToLocalChecked());
+    }
+  }
+
+  static inline Nan::Persistent<v8::Function> & constructor() {
+    static Nan::Persistent<v8::Function> my_constructor;
+    return my_constructor;
+  }
+
+  Access *m_Value;
 };
 
 std::string stringifyErr(DWORD code, const char *op) {
@@ -266,14 +342,30 @@ std::string getSid() {
   return toMB(stringSid, CodePage::UTF8, wcslen(stringSid));
 }
 
-#include <nbind/nbind.h>
- 
-NBIND_CLASS(Access) {
-  method(grant);
-  method(deny);
+
+NAN_METHOD(apply) {
+  if (info.Length() != 2) {
+    Nan::ThrowError("Expected parameters (access, path)");
+    return;
+  }
+
+  Local<Object> access = Nan::To<Object>(info[0]).ToLocalChecked();
+  String::Utf8Value path(info.GetIsolate(), info[1]);
+
+  apply(*Nan::ObjectWrap::Unwrap<AccessFactory>(access)->get(), *path);
 }
 
-NBIND_GLOBAL() {
-  function(apply);
-  function(getSid);
+NAN_METHOD(getSid) {
+  info.GetReturnValue().Set(Nan::New(getSid().c_str()).ToLocalChecked());
 }
+
+NAN_MODULE_INIT(Init) {
+  AccessFactory::Init(target);
+  Nan::Set(target, "grant"_n, GetFunction(Nan::New<v8::FunctionTemplate>(AccessFactory::Grant)).ToLocalChecked());
+  Nan::Set(target, "deny"_n, GetFunction(Nan::New<v8::FunctionTemplate>(AccessFactory::Deny)).ToLocalChecked());
+
+  Nan::Set(target, "apply"_n, GetFunction(New<FunctionTemplate>(apply)).ToLocalChecked());
+  Nan::Set(target, "getSid"_n, GetFunction(New<FunctionTemplate>(getSid)).ToLocalChecked());
+}
+
+NODE_MODULE(winperm, Init)

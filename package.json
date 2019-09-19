@@ -1,6 +1,6 @@
 {
   "name": "permissions",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "File permission management. When appropriate (windows) uses ACLs instead of file attributes.",
   "main": "index.js",
   "scripts": {
@@ -11,7 +11,6 @@
   "dependencies": {
     "autogypi": "^0.2.2",
     "nan": "^2.14.0",
-    "node-gyp": "^5.0.0",
-    "nbind": "^0.3.15"
+    "node-gyp": "^5.0.0"
   }
 }
