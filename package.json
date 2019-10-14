@@ -1,6 +1,6 @@
 {
   "name": "permissions",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "File permission management. When appropriate (windows) uses ACLs instead of file attributes.",
   "main": "index.js",
   "scripts": {
