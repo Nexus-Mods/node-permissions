@@ -4,6 +4,8 @@
 #include <Sddl.h>
 #include <string>
 #include <vector>
+#include <functional>
+#include <v8.h>
 #include <nan.h>
 
 #include "scopeguard.h"
@@ -64,7 +66,7 @@ inline v8::Local<v8::Value> WinApiException(
 
   std::wstring errStr = strerror(lastError);
   std::string err = toMB(errStr.c_str(), CodePage::UTF8, errStr.size()) + " (" + std::to_string(lastError) + ")";
-  std::string pathMB = toMB(path, CodePage::UTF8, wcslen(path));
+  std::string pathMB = path != nullptr ? toMB(path, CodePage::UTF8, wcslen(path)) : "";
   v8::Local<v8::Value> res = node::WinapiErrnoException(isolate, lastError, func, err.c_str(), pathMB.c_str());
   setNodeErrorCode(context, res->ToObject(Nan::GetCurrentContext()).ToLocalChecked(), lastError);
   return res;
@@ -265,14 +267,88 @@ std::string stringifyErr(DWORD code, const char *op) {
   return res;
 }
 
+BOOL SetPrivilege(HANDLE token, LPCTSTR privilege, BOOL enable) {
+  TOKEN_PRIVILEGES tokenPrivileges;
+  LUID luid;
+
+  if (!LookupPrivilegeValue(nullptr, privilege, &luid)) {
+    return FALSE;
+  }
+
+  tokenPrivileges.PrivilegeCount = 1;
+  tokenPrivileges.Privileges[0].Luid = luid;
+  tokenPrivileges.Privileges[0].Attributes = enable ? SE_PRIVILEGE_ENABLED : 0;
+
+  if (!AdjustTokenPrivileges(token, false, &tokenPrivileges, sizeof(TOKEN_PRIVILEGES), nullptr, nullptr)) {
+    return FALSE;
+  }
+
+  if (GetLastError() == ERROR_NOT_ALL_ASSIGNED) {
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+std::string sidToString(PSID sid) {
+  LPWSTR stringSid = nullptr;
+  if (!ConvertSidToStringSid(sid, &stringSid)) {
+    v8::Isolate::GetCurrent()->ThrowException(WinApiException(::GetLastError(), "ConvertSidToStringSid"));
+    return "";
+  }
+  ON_BLOCK_EXIT([&]() {
+    if (stringSid != nullptr) {
+      LocalFree(stringSid);
+    }
+    });
+
+  return toMB(stringSid, CodePage::UTF8, wcslen(stringSid));
+}
+
+template<typename T> using deleted_unique_ptr = std::unique_ptr<T, std::function<void(T*)>>;
+
+// abusing the fact C++ lets you throw everything, is this a problem?
+#define checkedBool(res, name, filePath) { if (!res) { throw WinApiException(::GetLastError(), name, filePath); } }
+#define checked(res, name, filePath) { if (res != ERROR_SUCCESS) { throw WinApiException(res, name, filePath); } }
+
+deleted_unique_ptr<TOKEN_USER> getCurrentUser() {
+  HANDLE token;
+  checkedBool(OpenProcessToken(GetCurrentProcess(), TOKEN_READ, &token), "OpenProcessToken", nullptr);
+
+  TOKEN_USER *temp = nullptr;
+  DWORD required = 0;
+  // pre-flight to get required buffer size
+  GetTokenInformation(token, TokenUser, (void*)temp, 0, &required);
+  deleted_unique_ptr<TOKEN_USER> res((TOKEN_USER*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, required), [](TOKEN_USER *user) {
+    HeapFree(GetProcessHeap(), 0, (void*)user);
+    });
+
+  checkedBool(GetTokenInformation(token, TokenUser, (void*)res.get(), required, &required), "GetTokenInformation", nullptr);
+  LPWSTR stringSid = nullptr;
+  checkedBool(ConvertSidToStringSid(res->User.Sid, &stringSid), "ConvertSidToStringSid", nullptr);
+
+  return res;
+}
+
+void setOwner(std::wstring path, PSID owner) {
+  HANDLE token;
+  checkedBool(OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &token), "OpenProcessToken", path.c_str());
+  checkedBool(SetPrivilege(token, SE_TAKE_OWNERSHIP_NAME, TRUE), "SetPrivilege", path.c_str());
+  checkedBool(SetPrivilege(token, SE_RESTORE_NAME, TRUE), "SetPrivilege", path.c_str());
+  checked(SetNamedSecurityInfoW(&path[0], SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, owner, nullptr, nullptr, nullptr), "SetNamedSecurityInfoW", path.c_str());
+  checkedBool(SetPrivilege(token, SE_TAKE_OWNERSHIP_NAME, FALSE), "SetPrivilege", path.c_str());
+  checkedBool(SetPrivilege(token, SE_RESTORE_NAME, FALSE), "SetPrivilege", path.c_str());
+}
+
 void apply(Access &access, const std::string &path) {
   std::wstring wpath = toWC(path.c_str(), CodePage::UTF8, path.size());
 
+  PSID owner;
   PACL oldAcl;
   PSECURITY_DESCRIPTOR secDesc = nullptr;
   DWORD res = GetNamedSecurityInfoW(
-    wpath.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
-    nullptr, nullptr, &oldAcl, nullptr, &secDesc);
+    wpath.c_str(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+    &owner, nullptr, &oldAcl, nullptr, &secDesc);
   if (res != ERROR_SUCCESS) {
     v8::Isolate::GetCurrent()->ThrowException(WinApiException(res, "GetNamedSecurityInfoW", wpath.c_str()));
     return;
@@ -287,6 +363,7 @@ void apply(Access &access, const std::string &path) {
   PACL newAcl = nullptr;
 
   res = SetEntriesInAclW(1, *access, oldAcl, &newAcl);
+
   if (res != ERROR_SUCCESS) {
     v8::Isolate::GetCurrent()->ThrowException(WinApiException(res, "SetEntriesInAclW", wpath.c_str()));
     return;
@@ -305,6 +382,23 @@ void apply(Access &access, const std::string &path) {
                               DACL_SECURITY_INFORMATION, nullptr, nullptr,
                               newAcl, nullptr);
 
+  if (res == ERROR_ACCESS_DENIED) {
+    // if this failed due to permission issues then the file/directory is owned by "a higher power", but
+    // as admin we can change the owner - preferrably only temporary
+    auto currentUser = getCurrentUser();
+    try {
+      setOwner(wpath, currentUser->User.Sid);
+      res = SetNamedSecurityInfoW(&wpath[0], SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION, nullptr, nullptr,
+        newAcl, nullptr);
+      // restore previous owner of the item
+      setOwner(wpath, owner);
+    }
+    catch (const v8::Local<v8::Value> &ex) {
+      v8::Isolate::GetCurrent()->ThrowException(ex);
+    }
+  }
+
   if (res != ERROR_SUCCESS) {
     v8::Isolate::GetCurrent()->ThrowException(WinApiException(res, "SetNamedSecurityInfoW", wpath.c_str()));
     return;
@@ -312,39 +406,14 @@ void apply(Access &access, const std::string &path) {
 }
 
 std::string getSid() {
-  HANDLE token = GetCurrentProcess();
-  if (!OpenProcessToken(token, TOKEN_READ, &token)) {
-    v8::Isolate::GetCurrent()->ThrowException(WinApiException(::GetLastError(), "OpenProcessToken"));
+  try {
+    auto user = getCurrentUser();
+    return sidToString(user->User.Sid);
+  }
+  catch (const v8::Local<v8::Value> &ex) {
+    v8::Isolate::GetCurrent()->ThrowException(ex);
     return "";
   }
-
-  TOKEN_USER *user = nullptr;
-  DWORD required = 0;
-  // pre-flight to get required buffer size
-  GetTokenInformation(token, TokenUser, (void*)user, 0, &required);
-  user = (TOKEN_USER*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, required);
-  ON_BLOCK_EXIT([&] () {
-    if (user != nullptr) {
-      HeapFree(GetProcessHeap(), 0, (void*)user);
-    }
-  });
-  if (!GetTokenInformation(token, TokenUser, (void*)user, required, &required)) {
-    v8::Isolate::GetCurrent()->ThrowException(WinApiException(::GetLastError(), "GetTokenInformation"));
-    return "";
-  }
-
-  LPWSTR stringSid = nullptr;
-  if (!ConvertSidToStringSid(user->User.Sid, &stringSid)) {
-    v8::Isolate::GetCurrent()->ThrowException(WinApiException(::GetLastError(), "ConvertSidToStringSid"));
-    return "";
-  }
-  ON_BLOCK_EXIT([&] () {
-    if (stringSid != nullptr) {
-      LocalFree(stringSid);
-    }
-  });
-
-  return toMB(stringSid, CodePage::UTF8, wcslen(stringSid));
 }
 
 
