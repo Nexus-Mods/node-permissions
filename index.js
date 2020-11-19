@@ -1,15 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-
-let winAcl = (() => {
-  let lib;
-  return () => {
-    if (lib === undefined) {
-      lib = require('./build/Release/winperm');
-    }
-    return lib;
-  }
-})();
+const winapi = require('winapi-bindings');
 
 function chmodTranslateRight(user, input) {
   let base = [
@@ -65,7 +56,7 @@ function allow(target, user, rights) {
   }
   if (process.platform === 'win32') {
     try {
-      winAcl().apply(winAcl().grant(user, rights), target);
+      winapi.AddFileACE(winapi.Access.Grant(user, rights), target);
       return chmod(target, user, rights);
     } catch (err) {
       return Promise.reject(err);
@@ -77,7 +68,7 @@ function allow(target, user, rights) {
 
 function getUserId() {
   if (process.platform === 'win32') {
-    return winAcl().getSid();
+    return winapi.GetUserSID();
   } else {
     return os.userInfo().username;
   }
