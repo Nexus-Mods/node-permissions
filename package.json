@@ -1,10 +1,9 @@
 {
   "name": "permissions",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "File permission management. When appropriate (windows) uses ACLs instead of file attributes.",
   "main": "index.js",
-  "scripts": {
-  },
+  "scripts": {},
   "author": "Black Tree Gaming Ltd",
   "license": "GPL-3.0",
   "dependencies": {
